@@ -1,0 +1,253 @@
+use std::{error::Error, iter::Peekable, marker::PhantomData, ops::{DerefMut, Deref}};
+
+use crate::{tokenizer::{Token, Type as TokenType, Operator, Location}, errors::{LocalizedError, LocalizableError}};
+
+
+pub trait AST
+{
+    fn location(&self) -> Location;
+}
+
+pub struct Wrapper<T>
+{
+    pub ast: T,
+    pub location: Location,
+}
+
+impl<T> AST for Wrapper<T>
+{
+    fn location(&self) -> Location { self.location }
+}
+
+impl<T> Deref for Wrapper<T>
+{
+    type Target = T;
+    fn deref(&self) -> &Self::Target { &self.ast }
+}
+
+pub trait Parseable: Sized
+{
+    fn _parse(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, Box<dyn Error>>;
+    fn matches(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> bool;
+
+    fn parse(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Wrapper<Self>, LocalizedError> {
+        let location = tokens.peek().unwrap().location;
+        let ast = Self::_parse(tokens)
+            .map_err(|err| LocalizedError::new(err, location))?;
+        Ok(Wrapper { ast, location })
+    }
+}
+
+pub trait Transformer<T, I>: Sized + Iterator<Item = Result<T, LocalizedError>> + From<Peekable<I>> + Into<Peekable<I>>
+where I: Iterator<Item = Token>, T: AST
+{}
+
+pub struct Literal(pub String);
+
+impl Parseable for Literal {
+    fn _parse(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, Box<dyn Error>> {
+        let token = tokens.next().ok_or("Expected literal")?;
+        let value = match token.type_ {
+            TokenType::Literal(value) => value,
+            _ => return Err("Expected literal".into()),
+        };
+        Ok(Self ( value ))
+    }
+    fn matches(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> bool {
+        match tokens.peek() {
+            Some(token) => matches!(token.type_, TokenType::Literal(_)),
+            None => false,
+        }
+    }
+}
+
+pub struct Repeated<T, I>
+where T: Parseable, I: Iterator<Item = Token>
+{
+    iter: Peekable<I>,
+    __marker: PhantomData<T>,
+}
+
+impl<T, I> From<Peekable<I>> for Repeated<T, I> 
+where T: Parseable + AST, I: Iterator<Item = Token>
+{
+    fn from(iter: Peekable<I>) -> Self {
+        Self { iter, __marker: PhantomData }
+    }
+}
+
+impl<T, I> Into<Peekable<I>> for Repeated<T, I> 
+where T: Parseable + AST, I: Iterator<Item = Token>
+{
+    fn into(self) -> Peekable<I> { self.iter } 
+}
+
+
+impl<T, I> Iterator for Repeated<T, I> 
+where T: Parseable + AST, I: Iterator<Item = Token>
+{
+    type Item = Result<Wrapper<T>, LocalizedError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if T::matches(&mut self.iter) {
+            Some(T::parse(&mut self.iter))
+        } else {
+            None
+        }
+    }
+}
+
+pub enum Either<T, U>
+{
+    A(T),
+    B(U),
+}
+
+impl<T, U> Parseable for Either<T, U>
+where T: Parseable, U: Parseable
+{
+    fn _parse(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, Box<dyn Error>> {
+        if T::matches(tokens) {
+            Ok(Self::A(T::_parse(tokens)?))
+        } else if U::matches(tokens) {
+            Ok(Self::B(U::_parse(tokens)?))
+        } else {
+            Err("Expected either".into())
+        }
+    }
+    fn matches(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> bool {
+        T::matches(tokens) || U::matches(tokens)
+    }
+}
+
+
+pub struct Chained<T, U, I>
+where T: Parseable, U: Parseable, I: Iterator<Item = Token>
+{
+    iter: Peekable<I>,
+    i: u8,
+    __marker: PhantomData<(T, U)>,
+}
+
+impl<T, U, I> Transformer<Wrapper<Either<T, U>>, I> for Chained<T, U, I>
+where T: Parseable, U: Parseable, I: Iterator<Item = Token> {}
+
+impl<T, U, I> From<Peekable<I>> for Chained<T, U, I>
+where T: Parseable, U: Parseable, I: Iterator<Item = Token>
+{
+    fn from(iter: Peekable<I>) -> Self {
+        Self { iter, __marker: PhantomData, i: 0 }
+    }
+}
+
+impl<T, U, I> Into<Peekable<I>> for Chained<T, U, I>
+where T: Parseable, U: Parseable, I: Iterator<Item = Token>
+{
+    fn into(self) -> Peekable<I> { self.iter }
+}
+
+impl<T, U, I> Iterator for Chained<T, U, I>
+where T: Parseable, U: Parseable, I: Iterator<Item = Token>
+{
+    type Item = Result<Wrapper<Either<T, U>>, LocalizedError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let location =  self.iter.peek().unwrap().location;
+        match self.i {
+            0 => Some(T::parse(&mut self.iter).map(|x| Either::A(x.ast))),
+            1 => Some(U::parse(&mut self.iter).map(|x| Either::B(x.ast))),
+            _ => None
+        }.map(|x| Ok( Wrapper { ast: x?, location } ))
+    }
+}
+
+type Type = Literal; // FIXME: this is a placeholder
+type Expression = Literal; // FIXME: this is a placeholder
+type Let<I> = Chained<Literal, Chained<Type, Expression, I>, I>;
+type Statement<I> = Either<Let<I>, Expression>;
+type Block<I> = Repeated<Statement<I>, I>;
+type Lambda<I> = Chained<Type, Chained<Repeated<Chained<Literal, Type, I>, I>, Block<I>, I>, I>;
+
+
+
+
+// type Statement = ;
+
+// pub enum Lambda<I: Iterator<Item = Token>> {
+//     ReturnType(Literal),
+//     Parameters(Repeated<Literal, I>),
+//     Body(Block),
+// }
+
+// impl<I, T> Transformer<T, I> for Lambda<I>
+// where I: Iterator<Item = Token>, T: Parseable + AST
+// {}
+
+// impl<I> From<Peekable<I>> for Lambda<I>
+// where I: Iterator<Item = Token>
+// {
+//     fn from(iter: Peekable<I>) -> Self {
+//         Self::ReturnType(Literal("".into()))
+//     }
+// }
+
+
+// CHAINABLE
+/*
+pub trait AstChainable<T>: AST 
+where T: AST
+{
+    fn partial_resolve(&mut self, until: usize) -> Result<(), Box<dyn Error>>;
+    fn size(&self) -> usize;
+    fn nth_mut(&mut self, n: usize) -> Option<T>;
+    fn nth(&self, n: usize) -> Option<T>;
+}
+
+#[derive(Debug, Clone)]
+struct AstChainLink<C, T>
+where C: AST, T: AstChainable<C>
+{
+    node: C,
+    tail: T,
+}
+
+struct AstChainEnd<C>
+where C: AST
+{
+    node: C,
+}
+
+impl<C, T> AstChainable<C> for AstChainLink<C, T>
+where C: AST, T: AstChainable<C>
+{
+    fn partial_resolve(&mut self, until: usize) -> Result<(), Box<dyn Error>> {
+        self.node.resolve()?;
+        self.tail.partial_resolve(until-1)?;
+        Ok(())
+    }
+    fn size(&self) -> usize {
+        1 + self.tail.size()
+    }
+    fn nth_mut(&mut self, n: usize) -> Option<C> {
+        if n == 0 {
+            Some(self.node)
+        } else {
+            self.tail.nth_mut(n-1)
+        }
+    }
+    fn nth(&self, n: usize) -> Option<C> {
+        if n == 0 {
+            Some(self.node)
+        } else {
+            self.tail.nth(n-1)
+        }
+    }
+}
+
+impl<C, T> AST for AstChainLink<C, T>
+where C: AST, T: AstChainable<C>
+{
+    fn resolve(&mut self) -> Result<(), Box<dyn Error>> {
+        self.resolve()?;
+        Ok(())
+    }
+}
+*/

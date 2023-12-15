@@ -1,0 +1,16 @@
+[package]
+name = "moolang"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anstream = "0.6.5"
+clap = { version = "4.4.11", features = ["derive"] }
+cranelift = "0.102.1"
+cranelift-jit = "0.102.1"
+cranelift-module = "0.102.1"
+cranelift-native = "0.102.1"
+itertools = "0.12.0"
+owo-colors = "3.5.0"
