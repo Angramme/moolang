@@ -1,4 +1,5 @@
 use core::fmt;
+use std::ops::{Deref, DerefMut};
 use std::{error::Error, iter::Peekable, fmt::Debug};
 
 use owo_colors::OwoColorize;
@@ -21,6 +22,7 @@ impl Debug for AST {
 #[derive(Debug)]
 pub enum Type {
     Literal(String),
+    Identifier(String),
     // name, type
     TypedLiteral(String, String),
     // operator, lhs, rhs - arithmetic expression
@@ -32,11 +34,21 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn wrap(self, location: Location) -> AST {
+    fn wrap(self, location: Location) -> AST {
         AST {
             type_: self,
             location,
         }
+    }
+}
+
+impl AST {
+    pub fn location(&self) -> &Location {
+        &self.location
+    }
+    /// Returns the type of the AST
+    pub fn type_(self) -> Type {
+        self.type_
     }
 }
 
@@ -157,7 +169,7 @@ pub fn parse_factor(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Resul
 pub fn parse_atom(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
     let location = locate(tokens);
     match tokens.next().map(|x| x.type_) {
-        Some(TokenT::Literal(s)) => Ok(Type::Literal(s).wrap(location)),
+        Some(TokenT::Literal(s)) => Ok(Type::Identifier(s).wrap(location)),
         Some(TokenT::Operator(Operator::Sub)) => Ok(Type::Expression(Operator::Sub, 
             Box::new(Type::Literal("0".to_owned()).wrap(location)), 
             Box::new(parse_atom(tokens)?)).wrap(location)),
@@ -201,11 +213,42 @@ pub fn parse_typed_literal(tokens: &mut Peekable<impl Iterator<Item = Token>>, s
     }
 }
 
+/// parse a literal, e.g. `1`
+pub fn parse_literal(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
+    // TODO FIXME add checks for literal type
+    // eg "" for string, pure numbers for int, float, etc.
+    let check_numeric = |x: &str| -> bool {
+        x.chars().all(|x| x.is_numeric() || x == '_')
+    };
+    let check_string = |x: &str| -> bool {
+        x.chars().next() == Some('"') && x.chars().last() == Some('"')
+    };
+    let location = locate(tokens);
+    match tokens.next().map(|x| x.type_) {
+        Some(TokenT::Literal(s)) if check_numeric(&s) || check_string(&s) => Ok(Type::Literal(s).wrap(location)),
+        x => Err(expected_found("literal", x)),
+    }
+}
+
+pub fn parse_identifier(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
+    // TODO FIXME add checks for reserved keywords
+    // eg only letters for identifiers
+    let check_literal = |x: &str| -> bool {
+        x.chars().all(|x| x.is_alphanumeric() || x == '_')
+        && x.chars().next().map(|x| x.is_alphabetic()).unwrap_or(false)
+    };
+    let location = locate(tokens);
+    match tokens.next().map(|x| x.type_) {
+        Some(TokenT::Literal(s)) if check_literal(&s) => Ok(Type::Identifier(s).wrap(location)),
+        x => Err(expected_found("identifier", x)),
+    }
+}
+
 
 
 /// parse an assignment expression, e.g. `let x = 1`
 /// * `tokens` - the tokens to parse
-pub fn parse_assignment(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
+pub fn parse_let(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
     let location = locate(tokens);
     match tokens.next().map(|x| x.type_) {
         Some(TokenT::Operator(Operator::Let)) => (),
@@ -221,11 +264,24 @@ pub fn parse_assignment(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> R
     }
 }
 
+/// parse an assignment expression, e.g. `x = 1`
+pub fn parse_assignement(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
+    let location = locate(tokens);
+    let name = parse_literal(tokens)?;
+    match tokens.next().map(|x| x.type_) {
+        Some(TokenT::Operator(Operator::Assign)) => {
+            let ast = parse_expression(tokens)?;
+            Ok(Type::Expression(Operator::Assign, Box::new(name), Box::new(ast)).wrap(location))
+        }
+        x => Err(expected_found("assignment operator", x)),
+    }
+}
+
 /// parse a top level module statement
 /// * `tokens` - the tokens to parse
 pub fn parse_statement(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<AST, ParseError> {
     let ast = match tokens.peek().map(|x| x.type_.clone()) {
-        Some(TokenT::Operator(Operator::Let)) => parse_assignment(tokens)?,
+        Some(TokenT::Operator(Operator::Let)) => parse_let(tokens)?,
         _ => parse_expression(tokens)?,
     };
     match tokens.next().map(|x| x.type_) {
@@ -302,6 +358,21 @@ pub fn parse_function(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Res
 }
 
 
+// PUBLIC HELPER TRAITS
+
+impl Deref for AST {
+    type Target = Type;
+    fn deref(&self) -> &Self::Target {
+        &self.type_
+    }
+}
+
+impl DerefMut for AST {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.type_
+    }
+}
+
 
 // PRIVATE HELPER FUNCTIONS
 
@@ -321,3 +392,4 @@ where T: fmt::Debug,
 fn locate(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Location {
     tokens.peek().map(|x| x.location).unwrap_or_default()
 }
+

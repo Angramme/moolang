@@ -2,6 +2,8 @@
 // https://github.com/bytecodealliance/cranelift-jit-demo?tab=readme-ov-file
 
 use crate::frontend::*;
+use crate::frontend::ast::{AST, Type as AstType};
+use crate::frontend::tokenizer::Operator;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Linkage, Module};
@@ -119,7 +121,7 @@ impl JIT {
         &mut self,
         params: Vec<String>,
         the_return: String,
-        stmts: Vec<Expr>,
+        stmts: Vec<AST>,
     ) -> Result<(), String> {
         // Our toy language currently only supports I64 values, though Cranelift
         // supports other types.
@@ -196,61 +198,69 @@ struct FunctionTranslator<'a> {
 impl<'a> FunctionTranslator<'a> {
     /// When you write out instructions in Cranelift, you get back `Value`s. You
     /// can then use these references in other instructions.
-    fn translate_expr(&mut self, expr: Expr) -> Value {
-        match expr {
-            Expr::Literal(literal) => {
+    fn translate_expr(&mut self, expr: AST) -> Value {
+        use AstType as Ty;
+        use Operator::*;
+        use Ty::Expression as Expr;
+        match *expr {
+            Ty::Literal(literal) => {
                 let imm: i32 = literal.parse().unwrap();
                 self.builder.ins().iconst(self.int, i64::from(imm))
             }
 
-            Expr::Add(lhs, rhs) => {
+            Expr(Add, lhs, rhs) => {
                 let lhs = self.translate_expr(*lhs);
                 let rhs = self.translate_expr(*rhs);
                 self.builder.ins().iadd(lhs, rhs)
             }
 
-            Expr::Sub(lhs, rhs) => {
+            Expr(Sub, lhs, rhs) => {
                 let lhs = self.translate_expr(*lhs);
                 let rhs = self.translate_expr(*rhs);
                 self.builder.ins().isub(lhs, rhs)
             }
 
-            Expr::Mul(lhs, rhs) => {
+            Expr(Mul,lhs, rhs) => {
                 let lhs = self.translate_expr(*lhs);
                 let rhs = self.translate_expr(*rhs);
                 self.builder.ins().imul(lhs, rhs)
             }
 
-            Expr::Div(lhs, rhs) => {
+            Expr(Div, lhs, rhs) => {
                 let lhs = self.translate_expr(*lhs);
                 let rhs = self.translate_expr(*rhs);
                 self.builder.ins().udiv(lhs, rhs)
             }
 
-            Expr::Eq(lhs, rhs) => self.translate_icmp(IntCC::Equal, *lhs, *rhs),
-            Expr::Ne(lhs, rhs) => self.translate_icmp(IntCC::NotEqual, *lhs, *rhs),
-            Expr::Lt(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThan, *lhs, *rhs),
-            Expr::Le(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThanOrEqual, *lhs, *rhs),
-            Expr::Gt(lhs, rhs) => self.translate_icmp(IntCC::SignedGreaterThan, *lhs, *rhs),
-            Expr::Ge(lhs, rhs) => self.translate_icmp(IntCC::SignedGreaterThanOrEqual, *lhs, *rhs),
-            Expr::Call(name, args) => self.translate_call(name, args),
-            Expr::GlobalDataAddr(name) => self.translate_global_data_addr(name),
-            Expr::Identifier(name) => {
+            // Ty::Eq(lhs, rhs) => self.translate_icmp(IntCC::Equal, *lhs, *rhs),
+            // Ty::Ne(lhs, rhs) => self.translate_icmp(IntCC::NotEqual, *lhs, *rhs),
+            // Ty::Lt(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThan, *lhs, *rhs),
+            // Ty::Le(lhs, rhs) => self.translate_icmp(IntCC::SignedLessThanOrEqual, *lhs, *rhs),
+            // Ty::Gt(lhs, rhs) => self.translate_icmp(IntCC::SignedGreaterThan, *lhs, *rhs),
+            // Ty::Ge(lhs, rhs) => self.translate_icmp(IntCC::SignedGreaterThanOrEqual, *lhs, *rhs),
+            // Ty::Call(name, args) => self.translate_call(name, args),
+            // Ty::GlobalDataAddr(name) => self.translate_global_data_addr(name),
+            Ty::Identifier(name) => {
                 // `use_var` is used to read the value of a variable.
                 let variable = self.variables.get(&name).expect("variable not defined");
                 self.builder.use_var(*variable)
             }
-            Expr::Assign(name, expr) => self.translate_assign(name, *expr),
-            Expr::IfElse(condition, then_body, else_body) => {
-                self.translate_if_else(*condition, then_body, else_body)
+            Expr(Assign, name, expr) => match **name {
+                Ty::Literal(name) => self.translate_assign(name, *expr),
+                _ => panic!("invalid assignment"),
             }
-            Expr::WhileLoop(condition, loop_body) => {
-                self.translate_while_loop(*condition, loop_body)
-            }
+            x => panic!("unimplemented/unexpected {:?}", x), // TODO: remove this
+            
+            // Ty::IfElse(condition, then_body, else_body) => {
+            //     self.translate_if_else(*condition, then_body, else_body)
+            // }
+            // Ty::WhileLoop(condition, loop_body) => {
+            //     self.translate_while_loop(*condition, loop_body)
+            // }
         }
     }
 
-    fn translate_assign(&mut self, name: String, expr: Expr) -> Value {
+    fn translate_assign(&mut self, name: String, expr: AST) -> Value {
         // `def_var` is used to write the value of a variable. Note that
         // variables can have multiple definitions. Cranelift will
         // convert them into SSA form for itself automatically.
@@ -260,7 +270,7 @@ impl<'a> FunctionTranslator<'a> {
         new_value
     }
 
-    fn translate_icmp(&mut self, cmp: IntCC, lhs: Expr, rhs: Expr) -> Value {
+    fn translate_icmp(&mut self, cmp: IntCC, lhs: AST, rhs: AST) -> Value {
         let lhs = self.translate_expr(lhs);
         let rhs = self.translate_expr(rhs);
         self.builder.ins().icmp(cmp, lhs, rhs)
@@ -268,9 +278,9 @@ impl<'a> FunctionTranslator<'a> {
 
     fn translate_if_else(
         &mut self,
-        condition: Expr,
-        then_body: Vec<Expr>,
-        else_body: Vec<Expr>,
+        condition: AST,
+        then_body: Vec<AST>,
+        else_body: Vec<AST>,
     ) -> Value {
         let condition_value = self.translate_expr(condition);
 
@@ -323,7 +333,7 @@ impl<'a> FunctionTranslator<'a> {
         phi
     }
 
-    fn translate_while_loop(&mut self, condition: Expr, loop_body: Vec<Expr>) -> Value {
+    fn translate_while_loop(&mut self, condition: AST, loop_body: Vec<AST>) -> Value {
         let header_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
@@ -355,7 +365,7 @@ impl<'a> FunctionTranslator<'a> {
         self.builder.ins().iconst(self.int, 0)
     }
 
-    fn translate_call(&mut self, name: String, args: Vec<Expr>) -> Value {
+    fn translate_call(&mut self, name: String, args: Vec<AST>) -> Value {
         let mut sig = self.module.make_signature();
 
         // Add a parameter for each argument.
@@ -398,7 +408,7 @@ fn declare_variables(
     builder: &mut FunctionBuilder,
     params: &[String],
     the_return: &str,
-    stmts: &[Expr],
+    stmts: &[AST],
     entry_block: Block,
 ) -> HashMap<String, Variable> {
     let mut variables = HashMap::new();
@@ -428,13 +438,13 @@ fn declare_variables_in_stmt(
     builder: &mut FunctionBuilder,
     variables: &mut HashMap<String, Variable>,
     index: &mut usize,
-    expr: &Expr,
+    expr: &AST,
 ) {
     match *expr {
-        Expr::Assign(ref name, _) => {
+        AST::Assign(ref name, _) => {
             declare_variable(int, builder, variables, index, name);
         }
-        Expr::IfElse(ref _condition, ref then_body, ref else_body) => {
+        AST::IfElse(ref _condition, ref then_body, ref else_body) => {
             for stmt in then_body {
                 declare_variables_in_stmt(int, builder, variables, index, stmt);
             }
@@ -442,7 +452,7 @@ fn declare_variables_in_stmt(
                 declare_variables_in_stmt(int, builder, variables, index, stmt);
             }
         }
-        Expr::WhileLoop(ref _condition, ref loop_body) => {
+        AST::WhileLoop(ref _condition, ref loop_body) => {
             for stmt in loop_body {
                 declare_variables_in_stmt(int, builder, variables, index, stmt);
             }

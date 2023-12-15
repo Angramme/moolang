@@ -77,7 +77,7 @@ impl FromStr for Type {
             "}" => Ok(Op(Operator::RCurl)),
             "let" => Ok(Op(Operator::Let)),
             "fn" => Ok(Op(Operator::Fn)), 
-            _ if s.chars().all(char::is_alphanumeric) => Ok(Type::Literal(s.to_owned())),
+            _ if s.chars().all(|x| x.is_alphanumeric() || x == '_') => Ok(Type::Literal(s.to_owned())),
             _ => Err(TokenError {
                 message: format!("Invalid token: {}", s),
             }),
@@ -148,6 +148,7 @@ pub fn slice_into_snippets<'a>(line: &'a str) -> impl Iterator<Item = &'a str> {
         else if c.is_alphanumeric() { 1 }
         else if c.is_ascii_punctuation() { 
             match c {
+                '_' => 1, // same as alphanumeric
                 '(' => 2,
                 ')' => 3,
                 '{' => 4,
